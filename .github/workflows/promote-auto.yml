@@ -1,0 +1,109 @@
+name: Promote — Single input (target_env only)
+
+# Only one input required: pick the target environment.
+#
+# Auto-derives:
+#   image_tag = ECR/<repo>:<sha-of-latest-main-commit>
+#   version   = YYYY.MM.DD-<short-sha>  (e.g. 2026.05.24-abc1234)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [qa, uat, prd]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: ${{ github.event.repository.name }}
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_env }}   # approval gate
+    permissions:
+      contents: write
+      id-token: write
+
+    outputs:
+      versioned_tag: ${{ steps.retag.outputs.versioned_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Auto-generate version
+        id: version
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          DATE=$(date +'%Y.%m.%d')
+          echo "value=${DATE}-${SHORT_SHA}-${{ inputs.target_env }}" >> $GITHUB_OUTPUT
+
+      - name: Pull source image (latest main commit)
+        run: |
+          SOURCE="${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          docker pull "$SOURCE"
+
+      - name: Retag and push
+        id: retag
+        run: |
+          REGISTRY="${{ steps.ecr_login.outputs.registry }}"
+          SOURCE="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          VERSIONED="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.value }}"
+          ENV_LATEST="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ inputs.target_env }}-latest"
+
+          docker tag "$SOURCE" "$VERSIONED"
+          docker tag "$SOURCE" "$ENV_LATEST"
+          docker push "$VERSIONED"
+          docker push "$ENV_LATEST"
+
+          echo "versioned_tag=${VERSIONED}" >> $GITHUB_OUTPUT
+
+          echo "### Promoted image" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source:** \`${SOURCE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Versioned tag:** \`${VERSIONED}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Env pointer:** \`${ENV_LATEST}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ inputs.target_env }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create Git tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.value }}"
+          git push origin "${{ steps.version.outputs.value }}"
+
+      - name: Create GitHub Release (prd only)
+        if: inputs.target_env == 'prd'
+        uses: softprops/action-gh-release@v2.2.1
+        with:
+          tag_name: "${{ steps.version.outputs.value }}"
+          name: "${{ steps.version.outputs.value }}"
+          generate_release_notes: true
+          make_latest: true
+          body: |
+            ## Docker image
+            ```
+            ${{ steps.retag.outputs.versioned_tag }}
+            ```
+
+  deploy:
+    needs: promote
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: ${{ inputs.target_env }}
+      image_tag: ${{ needs.promote.outputs.versioned_tag }}
+    secrets: inherit

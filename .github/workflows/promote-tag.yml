@@ -1,0 +1,120 @@
+name: Promote — Git tag driven
+
+# Trigger by pushing a git tag. No UI inputs needed.
+#
+#   QA:  git tag v1.2.0-qa.1  && git push origin v1.2.0-qa.1
+#   UAT: git tag v1.2.0-uat.1 && git push origin v1.2.0-uat.1
+#   PRD: git tag v1.2.0       && git push origin v1.2.0
+#
+# The workflow auto-derives:
+#   image_tag  = ECR/<repo>:<sha-of-tagged-commit>  (built by ci.yml when commit hit main)
+#   version    = tag name (e.g. v1.2.0-qa.1)
+#   target_env = parsed from the tag suffix
+
+on:
+  push:
+    tags:
+      - "v*.*.*-qa.*"    # → qa
+      - "v*.*.*-uat.*"   # → uat
+      - "v[0-9]*.[0-9]*.[0-9]*"  # → prd  (exact semver, no suffix)
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: ${{ github.event.repository.name }}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      target_env:  ${{ steps.parse.outputs.target_env }}
+      version:     ${{ steps.parse.outputs.version }}
+
+    steps:
+      - name: Parse tag → environment and version
+        id: parse
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "version=${TAG}" >> $GITHUB_OUTPUT
+
+          if [[ "$TAG" == *"-qa."* ]]; then
+            echo "target_env=qa" >> $GITHUB_OUTPUT
+          elif [[ "$TAG" == *"-uat."* ]]; then
+            echo "target_env=uat" >> $GITHUB_OUTPUT
+          else
+            echo "target_env=prd" >> $GITHUB_OUTPUT
+          fi
+
+  promote:
+    needs: resolve
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.target_env }}   # approval gate
+    permissions:
+      contents: write
+      id-token: write
+
+    outputs:
+      versioned_tag: ${{ steps.retag.outputs.versioned_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Pull source image (built from this commit by ci.yml)
+        run: |
+          SOURCE="${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          docker pull "$SOURCE"
+
+      - name: Retag and push
+        id: retag
+        run: |
+          REGISTRY="${{ steps.ecr_login.outputs.registry }}"
+          SOURCE="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          VERSIONED="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ needs.resolve.outputs.version }}"
+          ENV_LATEST="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ needs.resolve.outputs.target_env }}-latest"
+
+          docker tag "$SOURCE" "$VERSIONED"
+          docker tag "$SOURCE" "$ENV_LATEST"
+          docker push "$VERSIONED"
+          docker push "$ENV_LATEST"
+
+          echo "versioned_tag=${VERSIONED}" >> $GITHUB_OUTPUT
+
+          echo "### Promoted image" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source:** \`${SOURCE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Versioned tag:** \`${VERSIONED}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Env pointer:** \`${ENV_LATEST}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ needs.resolve.outputs.target_env }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create GitHub Release (prd only)
+        if: needs.resolve.outputs.target_env == 'prd'
+        uses: softprops/action-gh-release@v2.2.1
+        with:
+          tag_name: "${{ needs.resolve.outputs.version }}"
+          name: "${{ needs.resolve.outputs.version }}"
+          generate_release_notes: true
+          make_latest: true
+          body: |
+            ## Docker image
+            ```
+            ${{ steps.retag.outputs.versioned_tag }}
+            ```
+
+  deploy:
+    needs: [resolve, promote]
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: ${{ needs.resolve.outputs.target_env }}
+      image_tag: ${{ needs.promote.outputs.versioned_tag }}
+    secrets: inherit
