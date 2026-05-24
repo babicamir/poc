@@ -66,8 +66,7 @@ jobs:
 
       - name: Update dev deployment record
         run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          jq --arg v "$SHORT_SHA" '.dev = $v' deployments.json > tmp.json && mv tmp.json deployments.json
+          jq --arg v "${{ github.sha }}" '.dev = $v' deployments.json > tmp.json && mv tmp.json deployments.json
 
       - name: Commit deployments.json
         run: |

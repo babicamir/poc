@@ -61,18 +61,36 @@ jobs:
             exit 0
           fi
 
-          if [[ "$TARGET" == "qa" ]]; then
-            # QA always promotes from latest main commit
-            SOURCE_TAG="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+          # Resolve source environment
+          if [[ "$TARGET" == "qa"  ]]; then SOURCE_ENV="dev"; fi
+          if [[ "$TARGET" == "uat" ]]; then SOURCE_ENV="qa";  fi
+          if [[ "$TARGET" == "prd" ]]; then SOURCE_ENV="uat"; fi
 
-            echo "### Promoting to QA from main" >> $GITHUB_STEP_SUMMARY
-            echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-            echo "- **Image:**  \`${SOURCE_TAG}\`" >> $GITHUB_STEP_SUMMARY
+          if [[ "$TARGET" == "qa" ]]; then
+            # QA promotes the image currently deployed to DEV (full SHA stored by ci.yml)
+            CURRENT=$(jq -r '.dev' deployments.json)
+            SOURCE_TAG="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${CURRENT}"
+
+            echo "### Available dev images (latest first)" >> $GITHUB_STEP_SUMMARY
+            aws ecr describe-images \
+              --repository-name "${{ env.ECR_REPOSITORY }}" \
+              --query 'sort_by(imageDetails, &imagePushedAt) | reverse(@) | [*].imageTags' \
+              --output json \
+            | jq -r '.[] | .[] | select(. != null and (test("^[0-9a-f]{40}$")))' \
+            | head -5 \
+            | while read tag; do
+                if [[ "$tag" == "$CURRENT" ]]; then
+                  echo "- \`${tag}\` ← **auto-selected (currently in dev)**" >> $GITHUB_STEP_SUMMARY
+                else
+                  echo "- \`${tag}\`" >> $GITHUB_STEP_SUMMARY
+                fi
+              done
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> To promote a different build, re-run with **Override source tag** set." >> $GITHUB_STEP_SUMMARY
 
           else
             # UAT ← qa, PRD ← uat
-            if [[ "$TARGET" == "uat" ]]; then SOURCE_ENV="qa";  fi
-            if [[ "$TARGET" == "prd" ]]; then SOURCE_ENV="uat"; fi
 
             # Read current deployed tag from deployments.json
             CURRENT=$(jq -r --arg e "$SOURCE_ENV" '.[$e]' deployments.json)
