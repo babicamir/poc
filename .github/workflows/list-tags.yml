@@ -1,0 +1,64 @@
+name: List — Available tags per environment
+run-name: "List tags [${{ inputs.environment }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to list tags for"
+        required: true
+        type: choice
+        options: [dev, qa, uat, prd]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: ${{ github.event.repository.name }}
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: List tags and current deployment
+        run: |
+          ENV="${{ inputs.environment }}"
+          CURRENT=$(jq -r --arg e "$ENV" '.[$e]' deployments.json)
+
+          echo "## Tags for \`${ENV}\` (latest first)" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+
+          aws ecr describe-images \
+            --repository-name "${{ env.ECR_REPOSITORY }}" \
+            --query 'sort_by(imageDetails, &imagePushedAt) | reverse(@) | [*].{tags: imageTags, pushed: imagePushedAt}' \
+            --output json \
+          | jq -r --arg env "$ENV" \
+              '.[] | select(.tags != null) | .tags[] | select(contains("-" + $env + ".") or (($env == "dev") and contains("-dev.")))' \
+          | head -10 \
+          | while read tag; do
+              if [[ "$tag" == "$CURRENT" ]]; then
+                echo "| \`${tag}\` | ✅ currently deployed |" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "| \`${tag}\` | — |" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Currently deployed:** \`${CURRENT}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Copy a tag above and use it as **Override source tag** in the Promote workflow." >> $GITHUB_STEP_SUMMARY
