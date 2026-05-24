@@ -1,11 +1,12 @@
-name: Promote — Single input (target_env only)
+name: Promote — Auto
 run-name: "Promote [${{ inputs.target_env }}] ${{ github.sha }}"
 
-# Only one input required: pick the target environment.
+# Flow:
+#   qa  ← latest main SHA (auto)
+#   uat ← lists recent qa  tags from ECR → auto-selects current qa  deployment
+#   prd ← lists recent uat tags from ECR → auto-selects current uat deployment
 #
-# Auto-derives:
-#   image_tag = ECR/<repo>:<sha-of-latest-main-commit>
-#   version   = YYYY.MM.DD-<short-sha>  (e.g. 2026.05.24-abc1234)
+# Optional: override source_tag to promote a specific previous version
 
 on:
   workflow_dispatch:
@@ -15,21 +16,23 @@ on:
         required: true
         type: choice
         options: [qa, uat, prd]
+      source_tag:
+        description: "Override source tag (leave empty to auto-use latest from source env)"
+        required: false
 
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: ${{ github.event.repository.name }}
 
 jobs:
-  promote:
+  discover:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.target_env }}   # approval gate
     permissions:
-      contents: write
+      contents: read
       id-token: write
 
     outputs:
-      versioned_tag: ${{ steps.retag.outputs.versioned_tag }}
+      source_tag: ${{ steps.resolve.outputs.source_tag }}
 
     steps:
       - uses: actions/checkout@v4
@@ -44,52 +47,127 @@ jobs:
         id: ecr_login
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Auto-generate version
-        id: version
+      - name: Resolve source tag and list available tags
+        id: resolve
         run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          DATE=$(date +'%Y.%m.%d')
-          echo "value=${DATE}-${SHORT_SHA}-${{ inputs.target_env }}" >> $GITHUB_OUTPUT
+          REGISTRY="${{ steps.ecr_login.outputs.registry }}"
+          TARGET="${{ inputs.target_env }}"
 
-      - name: Pull source image (latest main commit)
-        run: |
-          SOURCE="${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
-          docker pull "$SOURCE"
+          # Manual override takes priority
+          if [[ -n "${{ inputs.source_tag }}" ]]; then
+            echo "source_tag=${{ inputs.source_tag }}" >> $GITHUB_OUTPUT
+            echo "### Source tag (manual override)" >> $GITHUB_STEP_SUMMARY
+            echo "- \`${{ inputs.source_tag }}\`" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          if [[ "$TARGET" == "qa" ]]; then
+            # QA always promotes from latest main commit
+            SOURCE_TAG="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+
+            echo "### Promoting to QA from main" >> $GITHUB_STEP_SUMMARY
+            echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Image:**  \`${SOURCE_TAG}\`" >> $GITHUB_STEP_SUMMARY
+
+          else
+            # UAT ← qa, PRD ← uat
+            if [[ "$TARGET" == "uat" ]]; then SOURCE_ENV="qa";  fi
+            if [[ "$TARGET" == "prd" ]]; then SOURCE_ENV="uat"; fi
+
+            # Read current deployed tag from deployments.json
+            CURRENT=$(jq -r --arg e "$SOURCE_ENV" '.[$e]' deployments.json)
+
+            # List last 5 tags from ECR for the source environment
+            echo "### Available ${SOURCE_ENV} tags (latest first)" >> $GITHUB_STEP_SUMMARY
+
+            aws ecr describe-images \
+              --repository-name "${{ env.ECR_REPOSITORY }}" \
+              --query 'sort_by(imageDetails, &imagePushedAt) | reverse(@) | [*].imageTags' \
+              --output json \
+            | jq -r ".[] | .[] | select(. != null and contains(\"-${SOURCE_ENV}\"))" \
+            | head -5 \
+            | while read tag; do
+                if [[ "$tag" == "$CURRENT" ]]; then
+                  echo "- \`${tag}\` ← **auto-selected (currently in ${SOURCE_ENV})**" >> $GITHUB_STEP_SUMMARY
+                else
+                  echo "- \`${tag}\`" >> $GITHUB_STEP_SUMMARY
+                fi
+              done
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> To promote a different version, re-run with **Override source tag** set." >> $GITHUB_STEP_SUMMARY
+
+            SOURCE_TAG="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${CURRENT}"
+          fi
+
+          echo "source_tag=${SOURCE_TAG}" >> $GITHUB_OUTPUT
+
+  promote:
+    needs: discover
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_env }}   # approval gate
+    permissions:
+      contents: write
+      id-token: write
+
+    outputs:
+      versioned_tag: ${{ steps.retag.outputs.versioned_tag }}
+      version:       ${{ steps.retag.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Pull source image
+        run: docker pull "${{ needs.discover.outputs.source_tag }}"
 
       - name: Retag and push
         id: retag
         run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          DATE=$(date +'%Y.%m.%d')
+          VERSION="${DATE}-${SHORT_SHA}-${{ inputs.target_env }}"
+
           REGISTRY="${{ steps.ecr_login.outputs.registry }}"
-          SOURCE="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
-          VERSIONED="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.value }}"
+          VERSIONED="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${VERSION}"
           ENV_LATEST="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ inputs.target_env }}-latest"
 
-          docker tag "$SOURCE" "$VERSIONED"
-          docker tag "$SOURCE" "$ENV_LATEST"
+          docker tag "${{ needs.discover.outputs.source_tag }}" "$VERSIONED"
+          docker tag "${{ needs.discover.outputs.source_tag }}" "$ENV_LATEST"
           docker push "$VERSIONED"
           docker push "$ENV_LATEST"
 
           echo "versioned_tag=${VERSIONED}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}"         >> $GITHUB_OUTPUT
 
           echo "### Promoted image" >> $GITHUB_STEP_SUMMARY
-          echo "- **Source:** \`${SOURCE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source:**        \`${{ needs.discover.outputs.source_tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Versioned tag:** \`${VERSIONED}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Env pointer:** \`${ENV_LATEST}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Environment:** ${{ inputs.target_env }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Env pointer:**   \`${ENV_LATEST}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:**   ${{ inputs.target_env }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Create Git tag
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.version.outputs.value }}"
-          git push origin "${{ steps.version.outputs.value }}"
+          git tag "${{ steps.retag.outputs.version }}"
+          git push origin "${{ steps.retag.outputs.version }}"
 
       - name: Create GitHub Release (prd only)
         if: inputs.target_env == 'prd'
         uses: softprops/action-gh-release@v2.2.1
         with:
-          tag_name: "${{ steps.version.outputs.value }}"
-          name: "${{ steps.version.outputs.value }}"
+          tag_name: "${{ steps.retag.outputs.version }}"
+          name: "${{ steps.retag.outputs.version }}"
           generate_release_notes: true
           make_latest: true
           body: |
@@ -97,6 +175,7 @@ jobs:
             ```
             ${{ steps.retag.outputs.versioned_tag }}
             ```
+            **Promoted from:** `${{ needs.discover.outputs.source_tag }}`
 
   deploy:
     needs: promote
@@ -121,7 +200,7 @@ jobs:
       - name: Update deployment record
         run: |
           jq --arg env "${{ inputs.target_env }}" \
-             --arg v   "${{ needs.promote.outputs.versioned_tag }}" \
+             --arg v   "${{ needs.promote.outputs.version }}" \
              '.[$env] = $v' deployments.json > tmp.json && mv tmp.json deployments.json
 
       - name: Commit deployments.json
@@ -129,5 +208,5 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add deployments.json
-          git diff --cached --quiet || git commit -m "chore: deploy to ${{ inputs.target_env }}"
+          git diff --cached --quiet || git commit -m "chore: deploy ${{ needs.promote.outputs.version }} to ${{ inputs.target_env }}"
           git push
