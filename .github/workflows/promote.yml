@@ -1,4 +1,5 @@
 name: Promote — Docker image tag-driven
+run-name: "Promote [${{ inputs.target_env }}] v${{ inputs.version }}"
 
 # Usage:
 #   To QA:  provide image_tag=<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<sha>, version=1.2.0-qa.1,  target_env=qa

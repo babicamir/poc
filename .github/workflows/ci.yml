@@ -1,4 +1,5 @@
 name: CI — Build & Push
+run-name: "CI [${{ github.ref_name }}] ${{ github.sha }} → dev"
 
 on:
   push:

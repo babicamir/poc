@@ -1,4 +1,5 @@
 name: Promote — Git tag driven
+run-name: "Promote [${{ github.ref_name }}] → auto-detected env"
 
 # Trigger by pushing a git tag. No UI inputs needed.
 #
