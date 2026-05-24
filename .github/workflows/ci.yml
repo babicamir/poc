@@ -87,7 +87,9 @@ jobs:
         run: |
           VERSION=$(cat VERSION)
 
-          # Auto-increment dev counter based on existing git tags
+          # Ensure all remote tags are available before calculating the counter
+          git fetch --tags
+
           LAST=$(git tag -l "v${VERSION}-dev.*" | sort -V | tail -1)
           if [[ -z "$LAST" ]]; then
             N=1
@@ -117,8 +119,13 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.version.outputs.dev_tag }}"
-          git push origin "${{ steps.version.outputs.dev_tag }}"
+          DEV_TAG="${{ steps.version.outputs.dev_tag }}"
+          if git ls-remote --tags origin "$DEV_TAG" | grep -q "$DEV_TAG"; then
+            echo "Tag $DEV_TAG already exists remotely, skipping"
+          else
+            git tag "$DEV_TAG"
+            git push origin "$DEV_TAG"
+          fi
 
       - name: Update deployment record
         run: |
