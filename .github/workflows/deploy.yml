@@ -1,0 +1,40 @@
+name: Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # No environment gate here — the caller (ci.yml / promote.yml) owns the approval gate
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy ${{ inputs.image_tag }} to ${{ inputs.environment }}
+        run: |
+          echo "Deploying ${{ inputs.image_tag }} to ${{ inputs.environment }}"
+          # Replace with your actual deploy command, e.g.:
+          # aws ecs update-service --cluster ${{ inputs.environment }} --service app --force-new-deployment
+          # kubectl set image deployment/app app=${{ inputs.image_tag }}
+          # helm upgrade --install app ./chart --set image.tag=${{ inputs.image_tag }}

@@ -1,0 +1,103 @@
+name: Promote — Docker image tag-driven
+
+# Usage:
+#   To QA:  provide image_tag=<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<sha>, version=1.2.0-qa.1,  target_env=qa
+#   To UAT: provide image_tag=<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<sha>, version=1.2.0-uat.1, target_env=uat
+#   To PRD: provide image_tag=<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<sha>, version=1.2.0,       target_env=prd
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Source image to promote (e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/app:abc1234)"
+        required: true
+      version:
+        description: "Version tag to apply (e.g. 1.2.0-qa.1 / 1.2.0-uat.1 / 1.2.0)"
+        required: true
+      target_env:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [qa, uat, prd]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: ${{ github.event.repository.name }}
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_env }}   # approval gate per env
+    permissions:
+      contents: write
+      id-token: write
+
+    outputs:
+      versioned_tag: ${{ steps.retag.outputs.versioned_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Pull source image
+        run: docker pull "${{ inputs.image_tag }}"
+
+      - name: Retag and push
+        id: retag
+        run: |
+          REGISTRY="${{ steps.ecr_login.outputs.registry }}"
+          VERSIONED="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ inputs.version }}"
+          ENV_LATEST="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ inputs.target_env }}-latest"
+
+          docker tag "${{ inputs.image_tag }}" "$VERSIONED"
+          docker tag "${{ inputs.image_tag }}" "$ENV_LATEST"
+          docker push "$VERSIONED"
+          docker push "$ENV_LATEST"
+
+          echo "versioned_tag=${VERSIONED}" >> $GITHUB_OUTPUT
+
+          echo "### Promoted image" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source:** \`${{ inputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Versioned tag:** \`${VERSIONED}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Env pointer:** \`${ENV_LATEST}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ inputs.target_env }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create Git tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Tags all promotions (rc, uat, release) for full traceability in git history
+          git tag "v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+
+      - name: Create GitHub Release (prd only)
+        if: inputs.target_env == 'prd'
+        uses: softprops/action-gh-release@v2.2.1
+        with:
+          tag_name: "v${{ inputs.version }}"
+          name: "v${{ inputs.version }}"
+          generate_release_notes: true
+          make_latest: true
+          body: |
+            ## Docker image
+            ```
+            ${{ steps.retag.outputs.versioned_tag }}
+            ```
+            **Promoted from:** `${{ inputs.image_tag }}`
+
+  deploy:
+    needs: promote
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: ${{ inputs.target_env }}
+      image_tag: ${{ needs.promote.outputs.versioned_tag }}
+    secrets: inherit

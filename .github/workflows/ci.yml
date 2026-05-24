@@ -1,0 +1,52 @@
+name: CI — Build & Push
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: ${{ github.event.repository.name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for OIDC AWS auth
+
+    outputs:
+      image_tag: ${{ steps.image_tag.outputs.sha_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push — SHA tag (built once, promoted by retagging)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+      - name: Output image tag
+        id: image_tag
+        run: |
+          echo "sha_tag=${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+  deploy-dev:
+    needs: build
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+      image_tag: ${{ needs.build.outputs.image_tag }}
+    secrets: inherit
