@@ -1,5 +1,5 @@
 name: CI — Build & Push
-run-name: "CI [${{ github.ref_name }}] ${{ github.sha }} → dev"
+run-name: "CI [${{ github.ref_name }}] ${{ github.sha }}"
 
 on:
   push:
@@ -14,13 +14,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write   # required for OIDC AWS auth
+      id-token: write
 
     outputs:
       image_tag: ${{ steps.image_tag.outputs.sha_tag }}
+      short_sha: ${{ steps.short_sha.outputs.value }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Compute short SHA
+        id: short_sha
+        run: echo "value=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -32,17 +37,17 @@ jobs:
         id: ecr_login
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push — SHA tag (built once, promoted by retagging)
+      - name: Build and push — short SHA tag (built once, promoted by retagging)
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          tags: ${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.short_sha.outputs.value }}
 
       - name: Output image tag
         id: image_tag
         run: |
-          echo "sha_tag=${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "sha_tag=${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.short_sha.outputs.value }}" >> $GITHUB_OUTPUT
 
   deploy-dev:
     needs: build
@@ -55,23 +60,69 @@ jobs:
       image_tag: ${{ needs.build.outputs.image_tag }}
     secrets: inherit
 
-  update-deployment-record:
+  tag-and-record:
     needs: [build, deploy-dev]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
 
-      - name: Update dev deployment record
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate dev version tag
+        id: version
         run: |
-          jq --arg v "${{ github.sha }}" '.dev = $v' deployments.json > tmp.json && mv tmp.json deployments.json
+          VERSION=$(cat VERSION)
 
-      - name: Commit deployments.json
+          # Auto-increment dev counter based on existing git tags
+          LAST=$(git tag -l "v${VERSION}-dev.*" | sort -V | tail -1)
+          if [[ -z "$LAST" ]]; then
+            N=1
+          else
+            N=$(echo "$LAST" | grep -oE '[0-9]+$')
+            N=$((N + 1))
+          fi
+
+          DEV_TAG="v${VERSION}-dev.${N}"
+          echo "dev_tag=${DEV_TAG}" >> $GITHUB_OUTPUT
+          echo "Generated dev tag: ${DEV_TAG}"
+
+      - name: Retag ECR image with dev version
+        run: |
+          REGISTRY="${{ steps.ecr_login.outputs.registry }}"
+          SHA_IMAGE="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ needs.build.outputs.short_sha }}"
+          DEV_VERSIONED="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ steps.version.outputs.dev_tag }}"
+          DEV_LATEST="${REGISTRY}/${{ env.ECR_REPOSITORY }}:dev-latest"
+
+          docker pull "$SHA_IMAGE"
+          docker tag "$SHA_IMAGE" "$DEV_VERSIONED"
+          docker tag "$SHA_IMAGE" "$DEV_LATEST"
+          docker push "$DEV_VERSIONED"
+          docker push "$DEV_LATEST"
+
+      - name: Create Git tag
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.dev_tag }}"
+          git push origin "${{ steps.version.outputs.dev_tag }}"
+
+      - name: Update deployment record
+        run: |
+          jq --arg v "${{ steps.version.outputs.dev_tag }}" '.dev = $v' deployments.json > tmp.json && mv tmp.json deployments.json
           git add deployments.json
-          git diff --cached --quiet || git commit -m "chore: deploy ${GITHUB_SHA::7} to dev"
+          git diff --cached --quiet || git commit -m "chore: deploy ${{ steps.version.outputs.dev_tag }} to dev"
           git push

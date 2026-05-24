@@ -71,12 +71,12 @@ jobs:
             CURRENT=$(jq -r '.dev' deployments.json)
             SOURCE_TAG="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${CURRENT}"
 
-            echo "### Available dev images (latest first)" >> $GITHUB_STEP_SUMMARY
+            echo "### Available dev tags (latest first)" >> $GITHUB_STEP_SUMMARY
             aws ecr describe-images \
               --repository-name "${{ env.ECR_REPOSITORY }}" \
               --query 'sort_by(imageDetails, &imagePushedAt) | reverse(@) | [*].imageTags' \
               --output json \
-            | jq -r '.[] | .[] | select(. != null and (test("^[0-9a-f]{40}$")))' \
+            | jq -r '.[] | .[] | select(. != null and contains("-dev."))' \
             | head -5 \
             | while read tag; do
                 if [[ "$tag" == "$CURRENT" ]]; then
@@ -151,7 +151,7 @@ jobs:
       - name: Retag and push
         id: retag
         run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
           DATE=$(date +'%Y.%m.%d')
           VERSION="${DATE}-${SHORT_SHA}-${{ inputs.target_env }}"
 
