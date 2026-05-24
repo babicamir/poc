@@ -119,3 +119,26 @@ jobs:
       environment: ${{ needs.resolve.outputs.target_env }}
       image_tag: ${{ needs.promote.outputs.versioned_tag }}
     secrets: inherit
+
+  update-deployment-record:
+    needs: [resolve, promote, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update deployment record
+        run: |
+          jq --arg env "${{ needs.resolve.outputs.target_env }}" \
+             --arg v   "${{ needs.resolve.outputs.version }}" \
+             '.[$env] = $v' deployments.json > tmp.json && mv tmp.json deployments.json
+
+      - name: Commit deployments.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deployments.json
+          git diff --cached --quiet || git commit -m "chore: deploy ${{ needs.resolve.outputs.version }} to ${{ needs.resolve.outputs.target_env }}"
+          git push
