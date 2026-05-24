@@ -45,6 +45,9 @@ jobs:
 
   deploy-dev:
     needs: build
+    permissions:
+      id-token: write
+      contents: read
     uses: ./.github/workflows/deploy.yml
     with:
       environment: dev
