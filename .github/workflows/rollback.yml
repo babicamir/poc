@@ -60,7 +60,7 @@ jobs:
     environment: dev
     permissions:
       id-token: write
-      contents: read
+      contents: write
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -75,6 +75,20 @@ jobs:
           echo "Rolling back DEV to $IMAGE_TAG..."
           # TODO: replace with your deployment command
 
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update deployments.json
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          jq --arg tag "$IMAGE_TAG" '.dev = $tag' deployments.json > tmp.json && mv tmp.json deployments.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deployments.json
+          git diff --staged --quiet || (git commit -m "chore: rollback dev to $IMAGE_TAG [skip ci]" && git pull --rebase origin main && git push)
+
   rollback-qa:
     name: Rollback QA → ${{ inputs.image-tag }}
     needs: verify
@@ -83,7 +97,7 @@ jobs:
     environment: qa  # manual approval
     permissions:
       id-token: write
-      contents: read
+      contents: write
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -98,6 +112,20 @@ jobs:
           echo "Rolling back QA to $IMAGE_TAG..."
           # TODO: replace with your deployment command
 
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update deployments.json
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          jq --arg tag "$IMAGE_TAG" '.qa = $tag' deployments.json > tmp.json && mv tmp.json deployments.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deployments.json
+          git diff --staged --quiet || (git commit -m "chore: rollback qa to $IMAGE_TAG [skip ci]" && git pull --rebase origin main && git push)
+
   rollback-uat:
     name: Rollback UAT → ${{ inputs.image-tag }}
     needs: verify
@@ -106,7 +134,7 @@ jobs:
     environment: uat
     permissions:
       id-token: write
-      contents: read
+      contents: write
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -121,6 +149,20 @@ jobs:
           echo "Rolling back UAT to $IMAGE_TAG..."
           # TODO: replace with your deployment command
 
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update deployments.json
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          jq --arg tag "$IMAGE_TAG" '.uat = $tag' deployments.json > tmp.json && mv tmp.json deployments.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deployments.json
+          git diff --staged --quiet || (git commit -m "chore: rollback uat to $IMAGE_TAG [skip ci]" && git pull --rebase origin main && git push)
+
   rollback-prd:
     name: Rollback PRD → ${{ inputs.image-tag }}
     needs: [verify, rollback-uat]  # uat must complete before prd can start
@@ -133,7 +175,7 @@ jobs:
     environment: prd  # manual approval
     permissions:
       id-token: write
-      contents: read
+      contents: write
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -147,3 +189,17 @@ jobs:
         run: |
           echo "Rolling back PRD to $IMAGE_TAG..."
           # TODO: replace with your deployment command
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update deployments.json
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          jq --arg tag "$IMAGE_TAG" '.prd = $tag' deployments.json > tmp.json && mv tmp.json deployments.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deployments.json
+          git diff --staged --quiet || (git commit -m "chore: rollback prd to $IMAGE_TAG [skip ci]" && git pull --rebase origin main && git push)
