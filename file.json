@@ -5,3 +5,9 @@
 	"items": ["a", "b", "c"],
 	"active": true
 }
+{
+	"name": "example",
+	"version": 1,
+	"items": ["a", "b", "c"],
+	"active": true
+}
