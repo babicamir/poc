@@ -1,3 +1,13 @@
+# [1.3.0](https://github.com/babicamir/poc/compare/v1.2.0...v1.3.0) (2026-06-05)
+
+
+### Features
+
+* **JSON-123:** change 1 ([1ec95bf](https://github.com/babicamir/poc/commit/1ec95bfcecb65ab75c8bb1782ab91acce24ebe05))
+* **JSON-123:** change 2 ([7dbe926](https://github.com/babicamir/poc/commit/7dbe92608f9c1674a1bcb97f6387f15fe6eee2cf))
+* **JSON-123:** change 3 ([54c8d02](https://github.com/babicamir/poc/commit/54c8d022c45c56836abd8e48b98a02f60e63241e))
+* **JSON-22:** nginx change ([f0d68fb](https://github.com/babicamir/poc/commit/f0d68fb831569a2cd110b6b2d084c08e45641470))
+
 # [1.2.0](https://github.com/babicamir/poc/compare/v1.1.0...v1.2.0) (2026-06-05)
 
 
