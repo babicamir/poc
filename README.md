@@ -10,9 +10,9 @@
 ![Release Date](https://img.shields.io/github/release-date/babicamir/poc?label=released)
 
 ### Environments
-![dev](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/babicamir/poc/main/deployments.json&query=$.dev&label=dev&color=gray)
-![qa](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/babicamir/poc/main/deployments.json&query=$.qa&label=qa&color=yellow)
-![uat](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/babicamir/poc/main/deployments.json&query=$.uat&label=uat&color=orange)
-![prd](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/babicamir/poc/main/deployments.json&query=$.prd&label=prd&color=green)
+![dev](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/babicamir/poc/main/deployments.json&query=$.dev&label=dev&color=gray&cacheSeconds=60)
+![qa](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/babicamir/poc/main/deployments.json&query=$.qa&label=qa&color=yellow&cacheSeconds=60)
+![uat](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/babicamir/poc/main/deployments.json&query=$.uat&label=uat&color=orange&cacheSeconds=60)
+![prd](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/babicamir/poc/main/deployments.json&query=$.prd&label=prd&color=green&cacheSeconds=60)
 
 GitHub workflow poc
