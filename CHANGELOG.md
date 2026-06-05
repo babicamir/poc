@@ -1,3 +1,15 @@
+# [1.1.0](https://github.com/babicamir/poc/compare/v1.0.1...v1.1.0) (2026-06-05)
+
+
+### Bug Fixes
+
+* DCCC-12323: Update rollback logic ([e5dab7b](https://github.com/babicamir/poc/commit/e5dab7b42f481e23bfa5adebcc8fbdbad83d55bb))
+
+
+### Features
+
+* DCC-1233: New Workflow for rolback ([e29568d](https://github.com/babicamir/poc/commit/e29568d69f6f82dadc37999e73c13e19c1d57b76))
+
 ## [1.0.1](https://github.com/babicamir/poc/compare/v1.0.0...v1.0.1) (2026-06-05)
 
 
