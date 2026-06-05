@@ -2,5 +2,5 @@
   "dev": "main-f53b43a",
   "qa": "main-f53b43a",
   "uat": "v1.3.3",
-  "prd": "none"
+  "prd": "v1.3.3"
 }
