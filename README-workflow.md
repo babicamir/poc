@@ -39,7 +39,7 @@ Semantic Release reads all commits since the last tag when the release is manual
 
 ## Workflow 1 — Development (`dev-pipeline.yml`)
 
-**Trigger:** push to `main`
+**Trigger:** push to `main` (skips commits containing `[skip ci]`)
 
 ```
 push to main
@@ -48,7 +48,7 @@ push to main
 build image
      │
      ▼
-push to ECR (tagged :main-<sha>)
+push to ECR  :main-<sha>
      │
      ▼
 deploy to DEV  (automatic)
@@ -72,6 +72,9 @@ deploy to QA
 
 **Trigger:** manual (`workflow_dispatch`) — run every 2 weeks when ready
 
+**Inputs:**
+- `image-sha` *(optional)* — short SHA of the image QA approved (e.g. `abc1234`). Defaults to current `main` HEAD if not provided.
+
 ```
 manual trigger (workflow_dispatch)
      │
@@ -79,9 +82,10 @@ manual trigger (workflow_dispatch)
 semantic-release on main
 → analyzes all commits since last tag
 → creates GitHub tag + Release (e.g. v1.3.0)
+→ commits [skip ci] version bump to main
      │
      ▼
-re-tag existing ECR image :main-<sha> → :v1.3.0  (no rebuild)
+re-tag ECR image  :main-<sha> → :v1.3.0  (no rebuild)
      │
      ▼
 deploy to UAT  (automatic)
@@ -95,9 +99,40 @@ deploy to PRD
     end
 ```
 
-- Batches all `feat:` and `fix:` commits since the last release into one version
-- Same image that was tested in DEV/QA is promoted — no new build
+- Provide `image-sha` to pin exactly the image QA tested — recommended
+- Batches all `feat:` and `fix:` commits since last release into one version
+- Semantic-release commits back to `main` with `[skip ci]` — does not re-trigger dev-pipeline
 - If only `chore:` commits exist since last tag, semantic-release exits with no release created
+
+---
+
+## Workflow 3 — Rollback (`rollback.yml`)
+
+**Trigger:** manual (`workflow_dispatch`)
+
+**Inputs:**
+- `image-tag` *(required)* — ECR tag to deploy (e.g. `v1.2.0` or `main-abc1234`)
+- `environment` *(required)* — target environment: `dev` / `qa` / `uat` / `prd`
+
+```
+manual trigger (workflow_dispatch)
+  image-tag   = v1.2.0
+  environment = prd
+     │
+     ▼
+verify image tag exists in ECR  (fails fast on typo)
+     │
+     ▼
+deploy :v1.2.0 to selected environment
+(prd/uat still enforce GitHub Environment approval gate)
+     │
+    end
+```
+
+- No semantic-release, no rebuild, no version bump
+- Use versioned tags (`v1.2.0`) to roll back UAT/PRD releases
+- Use SHA tags (`main-abc1234`) to roll back DEV/QA to a specific build
+- PRD rollback requires the same manual approval as a normal release
 
 ---
 
@@ -105,39 +140,41 @@ deploy to PRD
 
 | Environment | Workflow | Auto-deploy | Required reviewers |
 |---|---|---|---|
-| `dev` | dev-pipeline | yes | none |
-| `qa` | dev-pipeline | no | 1 reviewer |
-| `uat` | release-pipeline | yes | none |
-| `prd` | release-pipeline | no | 1 reviewer |
+| `dev` | dev-pipeline, rollback | yes | none |
+| `qa` | dev-pipeline, rollback | no | 1 reviewer |
+| `uat` | release-pipeline, rollback | yes | none |
+| `prd` | release-pipeline, rollback | no | 1 reviewer |
 
 ---
 
 ## Key Tools / Actions
 
-- [`semantic-release`](https://github.com/semantic-release/semantic-release) — version bumping and changelog generation
-- `@semantic-release/github` — creates GitHub Releases and tags
+- [`cycjimmy/semantic-release-action`](https://github.com/cycjimmy/semantic-release-action) — runs semantic-release with outputs (`version`, `released`)
 - `@semantic-release/changelog` — updates `CHANGELOG.md`
+- `@semantic-release/git` — commits version bump back to `main` with `[skip ci]`
+- `@semantic-release/github` — creates GitHub Releases and tags
 - `aws-actions/configure-aws-credentials` — OIDC-based AWS auth (no long-lived keys)
 - `aws-actions/amazon-ecr-login` — ECR authentication
-- GitHub Environments — gate promotions with approval workflows
 
 ---
 
-## Secrets / Variables Needed
+## Repository Variables & Secrets
 
 ```
-# Per environment (set in GitHub Environment secrets)
-AWS_ROLE_ARN          # IAM role ARN for OIDC assumption
+# GitHub Actions Variables (non-sensitive, set at repo level)
 AWS_REGION            # e.g. eu-west-1
-ECR_REGISTRY          # AWS ECR registry URL
+ECR_REPOSITORY        # ECR repository name, e.g. my-app
 
-# Repository-level
-GITHUB_TOKEN          # auto-provided — used by semantic-release
+# GitHub Environment Secrets (set per environment: dev / qa / uat / prd)
+AWS_ROLE_ARN          # IAM role ARN for OIDC assumption
+
+# Repository-level (auto-provided)
+GITHUB_TOKEN          # used by semantic-release
 ```
 
 ---
 
-## Minimal `release.config.js`
+## `release.config.js`
 
 ```js
 module.exports = {
@@ -147,10 +184,15 @@ module.exports = {
     '@semantic-release/release-notes-generator',
     '@semantic-release/changelog',
     ['@semantic-release/github', { assets: [] }],
-    ['@semantic-release/git', { assets: ['CHANGELOG.md', 'package.json'] }],
+    ['@semantic-release/git', {
+      assets: ['CHANGELOG.md', 'package.json'],
+      message: 'chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}',
+    }],
   ],
 };
 ```
+
+The `[skip ci]` in the commit message prevents the version bump commit from re-triggering `dev-pipeline`.
 
 ---
 
@@ -160,4 +202,5 @@ module.exports = {
 2. **Build once** — the image deployed to PRD is the same one that ran in DEV and QA
 3. **Semantic Release owns the version** — never bump versions manually
 4. **Release on a schedule** — run `release-pipeline` manually every 2 weeks, not on every merge
-5. **Environment gates live in GitHub Environments** — not in branch protection rules
+5. **Provide `image-sha` when releasing** — pins exactly the image QA signed off on
+6. **Environment gates live in GitHub Environments** — not in branch protection rules
