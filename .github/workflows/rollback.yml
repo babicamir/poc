@@ -6,22 +6,27 @@ on:
       image-tag:
         description: 'ECR image tag to deploy (e.g. v1.2.0 or main-abc1234)'
         required: true
-      environment:
-        description: 'Target environment'
-        required: true
-        type: choice
-        options:
-          - dev
-          - qa
-          - uat
-          - prd
+      dev:
+        description: 'Rollback DEV'
+        type: boolean
+        default: false
+      qa:
+        description: 'Rollback QA'
+        type: boolean
+        default: false
+      uat:
+        description: 'Rollback UAT'
+        type: boolean
+        default: false
+      prd:
+        description: 'Rollback PRD'
+        type: boolean
+        default: false
 
 jobs:
-  rollback:
-    name: Rollback ${{ inputs.environment }} → ${{ inputs.image-tag }}
+  verify:
+    name: Verify image exists in ECR
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}  # dynamically picks the GitHub Environment
-                                            # prd/uat still require manual approval as configured
     permissions:
       id-token: write
       contents: read
@@ -32,7 +37,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Verify image exists in ECR
+      - name: Verify image tag
         env:
           REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ inputs.image-tag }}
@@ -47,11 +52,98 @@ jobs:
           }
           echo "Verified: $IMAGE_TAG exists in ECR"
 
+  rollback-dev:
+    name: Rollback DEV → ${{ inputs.image-tag }}
+    needs: verify
+    if: inputs.dev == true
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
       - name: Deploy
         env:
           IMAGE_TAG: ${{ inputs.image-tag }}
-          ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          echo "Rolling back $ENVIRONMENT to $IMAGE_TAG..."
+          echo "Rolling back DEV to $IMAGE_TAG..."
           # TODO: replace with your deployment command
-          # e.g. aws ecs update-service --cluster $ENVIRONMENT --service my-app --force-new-deployment
+
+  rollback-qa:
+    name: Rollback QA → ${{ inputs.image-tag }}
+    needs: verify
+    if: inputs.qa == true
+    runs-on: ubuntu-latest
+    environment: qa  # manual approval
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          echo "Rolling back QA to $IMAGE_TAG..."
+          # TODO: replace with your deployment command
+
+  rollback-uat:
+    name: Rollback UAT → ${{ inputs.image-tag }}
+    needs: verify
+    if: inputs.uat == true
+    runs-on: ubuntu-latest
+    environment: uat
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          echo "Rolling back UAT to $IMAGE_TAG..."
+          # TODO: replace with your deployment command
+
+  rollback-prd:
+    name: Rollback PRD → ${{ inputs.image-tag }}
+    needs: [verify, rollback-uat]  # uat must complete before prd can start
+    if: |
+      always() &&
+      inputs.prd == true &&
+      (needs.verify.result == 'success') &&
+      (needs.rollback-uat.result == 'success' || needs.rollback-uat.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: prd  # manual approval
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          echo "Rolling back PRD to $IMAGE_TAG..."
+          # TODO: replace with your deployment command

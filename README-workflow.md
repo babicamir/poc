@@ -112,27 +112,38 @@ deploy to PRD
 
 **Inputs:**
 - `image-tag` *(required)* — ECR tag to deploy (e.g. `v1.2.0` or `main-abc1234`)
-- `environment` *(required)* — target environment: `dev` / `qa` / `uat` / `prd`
+- `dev` / `qa` / `uat` / `prd` — boolean checkboxes, select one or more environments
 
 ```
 manual trigger (workflow_dispatch)
-  image-tag   = v1.2.0
-  environment = prd
+  image-tag = v1.2.0
+  uat = true
+  prd = true
      │
      ▼
 verify image tag exists in ECR  (fails fast on typo)
      │
-     ▼
-deploy :v1.2.0 to selected environment
-(prd/uat still enforce GitHub Environment approval gate)
+     ├──────────────────────┐
+     ▼                      ▼
+rollback DEV (if checked)   rollback QA (if checked)
+                            manual approval ◄── GitHub Environment: qa
+
+rollback UAT (if checked, runs in parallel with DEV/QA)
+     │
+     ▼  (waits for UAT to complete or be skipped)
+rollback PRD (if checked)
+manual approval ◄── GitHub Environment: prd
      │
     end
 ```
 
 - No semantic-release, no rebuild, no version bump
+- ECR image is verified once before any environment is touched
+- DEV, QA, UAT roll back in parallel after verify passes
+- PRD waits for UAT — if UAT was selected and failed, PRD is blocked; if UAT was skipped, PRD proceeds
 - Use versioned tags (`v1.2.0`) to roll back UAT/PRD releases
 - Use SHA tags (`main-abc1234`) to roll back DEV/QA to a specific build
-- PRD rollback requires the same manual approval as a normal release
+- QA and PRD rollbacks require the same manual approval as normal deployments
 
 ---
 
