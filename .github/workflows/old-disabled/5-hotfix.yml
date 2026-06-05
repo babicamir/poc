@@ -1,0 +1,225 @@
+name: 5. Hotfix - Emergency Production Patch
+
+# ─────────────────────────────────────────────────────────────────
+# Use this workflow ONLY for critical production patches that cannot
+# wait for the full INT → STG → UAT → PROD promotion cycle.
+# Hotfixes still follow "build once, promote everywhere":
+#   alpha.N  →  rc.1  →  vX.Y.Z+1  (patch bump, no minor bump)
+# ─────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_version:
+        description: 'Current stable version being patched (e.g. v1.3.0)'
+        required: true
+        type: string
+      confirm_hotfix:
+        description: 'Type HOTFIX to confirm emergency release'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE_NAME: ${{ github.repository }}
+  REGISTRY: ghcr.io
+  PROD_REGISTRY: ghcr.io
+
+jobs:
+  # ─────────────────────────────────────────────
+  # 0. Safety gate
+  # ─────────────────────────────────────────────
+  confirm-gate:
+    name: Confirm Hotfix Intent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Confirmation String
+        run: |
+          if [ "${{ inputs.confirm_hotfix }}" != "HOTFIX" ]; then
+            echo "❌ Confirmation string must be exactly: HOTFIX"
+            exit 1
+          fi
+          echo "✅ Hotfix deployment confirmed."
+
+  # ─────────────────────────────────────────────
+  # 1. Build hotfix image (patch bump alpha)
+  # ─────────────────────────────────────────────
+  build:
+    name: Build Hotfix Image
+    runs-on: ubuntu-latest
+    needs: confirm-gate
+    outputs:
+      new-version: ${{ steps.generate-version.outputs.new-version }}
+      image-digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Hotfix Alpha Version
+        id: generate-version
+        uses: anvaplus/github-actions-common/.github/actions/next-version@main
+        with:
+          version-type: 'alpha'
+          bump-type: 'patch'    # patch bump instead of minor
+          tag-repo: 'true'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.generate-version.outputs.new-version }}
+
+      - name: Build and Push Hotfix Image
+        id: push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────
+  # 2. Fast-track: alpha → rc (skip beta for hotfix)
+  # ─────────────────────────────────────────────
+  promote-to-rc:
+    name: Fast-Track Promote to RC
+    runs-on: ubuntu-latest
+    needs: build
+    outputs:
+      rc-version: ${{ steps.promote-rc.outputs.new-version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Promote to RC
+        id: promote-rc
+        uses: anvaplus/github-actions-common/.github/actions/promote-version@main
+        with:
+          version: ${{ needs.build.outputs.new-version }}
+          promote-type: 'rc'
+          tag-repo: 'true'
+
+      - name: Retag Image
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Copy RC Tag
+        run: |
+          crane copy \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build.outputs.new-version }}" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.promote-rc.outputs.new-version }}"
+
+  # ─────────────────────────────────────────────
+  # 3. Deploy RC to UAT for quick verification
+  # ─────────────────────────────────────────────
+  deploy-uat:
+    name: Quick UAT Verification
+    runs-on: ubuntu-latest
+    needs: promote-to-rc
+    environment:
+      name: uat
+      url: https://uat.example.com
+    steps:
+      - name: Deploy RC to UAT
+        run: |
+          echo "Deploying hotfix ${{ needs.promote-to-rc.outputs.rc-version }} to UAT for verification..."
+      - name: Run Critical Smoke Tests
+        run: |
+          echo "Running critical path tests only..."
+
+  # ─────────────────────────────────────────────
+  # 4. Promote to stable and release
+  # ─────────────────────────────────────────────
+  promote-to-stable:
+    name: Promote RC → Stable & Release
+    runs-on: ubuntu-latest
+    needs: [ promote-to-rc, deploy-uat ]
+    outputs:
+      stable-version: ${{ steps.promote-stable.outputs.new-version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Promote to Stable
+        id: promote-stable
+        uses: anvaplus/github-actions-common/.github/actions/promote-version@main
+        with:
+          version: ${{ needs.promote-to-rc.outputs.rc-version }}
+          is-stable: 'true'
+          tag-repo: 'true'
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Log in to Source Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Prod Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.PROD_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.PROD_REGISTRY_TOKEN }}
+
+      - name: Copy Image to Prod Registry
+        run: |
+          crane copy \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.promote-to-rc.outputs.rc-version }}" \
+            "${{ env.PROD_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.promote-stable.outputs.new-version }}"
+
+  # ─────────────────────────────────────────────
+  # 5. Deploy to Production
+  # ─────────────────────────────────────────────
+  deploy-prod:
+    name: Deploy Hotfix to Production
+    runs-on: ubuntu-latest
+    needs: promote-to-stable
+    environment:
+      name: production
+      url: https://example.com
+    steps:
+      - name: Deploy to Production
+        run: |
+          echo "🚨 Deploying hotfix ${{ needs.promote-to-stable.outputs.stable-version }} to PROD..."
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.promote-to-stable.outputs.stable-version }}
+          name: Hotfix ${{ needs.promote-to-stable.outputs.stable-version }}
+          generate_release_notes: true
+          make_latest: true
+
+      - name: Summary
+        run: |
+          echo "## 🚨 Hotfix Released" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Patched Version | \`${{ inputs.base_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Released As | \`${{ needs.promote-to-stable.outputs.stable-version }}\` |" >> $GITHUB_STEP_SUMMARY

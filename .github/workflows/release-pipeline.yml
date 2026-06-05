@@ -1,0 +1,129 @@
+name: Release Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      image-sha:
+        description: 'Short SHA of the image to release (7 chars, e.g. a1b2c3d). Leave empty to use current main HEAD.'
+        required: false
+        default: ''
+
+jobs:
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      version: ${{ steps.semantic.outputs.new_release_version }}
+      released: ${{ steps.semantic.outputs.new_release_published }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Semantic Release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          extra_plugins: |
+            @semantic-release/changelog
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  retag:
+    name: Re-tag ECR Image
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve source image tag
+        id: source
+        run: |
+          if [ -n "${{ inputs.image-sha }}" ]; then
+            echo "tag=main-${{ inputs.image-sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=main-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Re-tag image in ECR
+        env:
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          SOURCE_TAG: ${{ steps.source.outputs.tag }}
+          TARGET_TAG: v${{ needs.release.outputs.version }}
+        run: |
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name $REPOSITORY \
+            --image-ids imageTag=$SOURCE_TAG \
+            --query 'images[0].imageManifest' \
+            --output text)
+
+          aws ecr put-image \
+            --repository-name $REPOSITORY \
+            --image-tag $TARGET_TAG \
+            --image-manifest "$MANIFEST"
+
+          echo "Re-tagged $SOURCE_TAG → $TARGET_TAG"
+
+  deploy-uat:
+    name: Deploy to UAT
+    needs: [release, retag]
+    runs-on: ubuntu-latest
+    environment: uat  # no approval — auto deploys after re-tag
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy
+        env:
+          VERSION: v${{ needs.release.outputs.version }}
+        run: |
+          echo "Deploying to UAT environment..."
+          # TODO: replace with your deployment command
+          # e.g. aws ecs update-service --cluster uat --service my-app --force-new-deployment
+
+  deploy-prd:
+    name: Deploy to PRD
+    needs: [release, deploy-uat]
+    runs-on: ubuntu-latest
+    environment: prd  # manual approval configured in GitHub Environments
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy
+        env:
+          VERSION: v${{ needs.release.outputs.version }}
+        run: |
+          echo "Deploying to PRD environment..."
+          # TODO: replace with your deployment command

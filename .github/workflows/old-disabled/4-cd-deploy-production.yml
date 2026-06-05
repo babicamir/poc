@@ -1,0 +1,141 @@
+name: 4. CD - Deploy to Production (PROD)
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_version:
+        description: 'RC version to promote (e.g. v1.3.0-rc.2)'
+        required: true
+        type: string
+      confirm_production:
+        description: 'Type DEPLOY to confirm production release'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE_NAME: ${{ github.repository }}
+  REGISTRY: ghcr.io
+  # Separate prod registry for segregated access control (recommended)
+  PROD_REGISTRY: ghcr.io
+
+jobs:
+  # ─────────────────────────────────────────────
+  # 0. Safety gate
+  # ─────────────────────────────────────────────
+  confirm-gate:
+    name: Confirm Production Intent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Confirmation String
+        run: |
+          if [ "${{ inputs.confirm_production }}" != "DEPLOY" ]; then
+            echo "❌ Confirmation string must be exactly: DEPLOY"
+            exit 1
+          fi
+          echo "✅ Production deployment confirmed."
+
+  # ─────────────────────────────────────────────
+  # 1. Promote rc → stable
+  # ─────────────────────────────────────────────
+  promote-version:
+    name: Promote RC → Stable
+    runs-on: ubuntu-latest
+    needs: confirm-gate
+    outputs:
+      new-version: ${{ steps.promote-prod.outputs.new-version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Promote to Stable (PROD)
+        id: promote-prod
+        uses: anvaplus/github-actions-common/.github/actions/promote-version@main
+        with:
+          version: ${{ inputs.artifact_version }}
+          is-stable: 'true'   # strips all prerelease metadata → clean semver
+          tag-repo: 'true'
+
+      - name: Report Promoted Version
+        run: |
+          echo "🎉 Promoted: ${{ inputs.artifact_version }} → ${{ steps.promote-prod.outputs.new-version }}"
+
+  # ─────────────────────────────────────────────
+  # 2. Copy image to prod registry (same digest)
+  # ─────────────────────────────────────────────
+  promote-image:
+    name: Promote Image to PROD Registry
+    runs-on: ubuntu-latest
+    needs: promote-version
+    steps:
+      - name: Log in to Source Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Prod Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.PROD_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.PROD_REGISTRY_TOKEN }}
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Copy Image to Prod Registry (no rebuild)
+        run: |
+          SOURCE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.artifact_version }}"
+          TARGET="${{ env.PROD_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.promote-version.outputs.new-version }}"
+          crane copy "$SOURCE" "$TARGET"
+          echo "✅ Promoted image: $SOURCE → $TARGET"
+          echo "🔒 Same digest guaranteed — no rebuild performed."
+
+  # ─────────────────────────────────────────────
+  # 3. Deploy to Production
+  # ─────────────────────────────────────────────
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [ promote-version, promote-image ]
+    environment:
+      name: production
+      url: https://example.com
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Production
+        run: |
+          echo "🚀 Deploying ${{ needs.promote-version.outputs.new-version }} to PROD..."
+          # e.g. update Argo CD image tag / Helm values / kustomize overlay
+
+      - name: Production Smoke Tests
+        run: |
+          echo "Running production smoke tests..."
+          # Lightweight health-check / synthetic monitor call here
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.promote-version.outputs.new-version }}
+          name: Release ${{ needs.promote-version.outputs.new-version }}
+          generate_release_notes: true
+          make_latest: true
+
+      - name: Summary
+        run: |
+          echo "## 🚀 Production Release" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Source RC | \`${{ inputs.artifact_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Released As | \`${{ needs.promote-version.outputs.new-version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | Production ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY

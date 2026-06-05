@@ -1,0 +1,85 @@
+name: Dev Pipeline
+
+on:
+  push:
+    branches: [main]
+    # GitHub natively skips this workflow when the commit message contains [skip ci]
+    # semantic-release commits include [skip ci] to prevent looping
+
+jobs:
+  build:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: echo "tag=main-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        env:
+          IMAGE: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ steps.meta.outputs.tag }}
+        run: |
+          docker build -t $IMAGE .
+          docker push $IMAGE
+
+  deploy-dev:
+    name: Deploy to DEV
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy
+        env:
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+        run: |
+          echo "Deploying to DEV environment..."
+          # TODO: replace with your deployment command
+          # e.g. aws ecs update-service --cluster dev --service my-app --force-new-deployment
+
+  deploy-qa:
+    name: Deploy to QA
+    needs: [build, deploy-dev]
+    runs-on: ubuntu-latest
+    environment: qa  # manual approval configured in GitHub Environments
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy
+        env:
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+        run: |
+          echo "Deploying to QA environment..."
+          # TODO: replace with your deployment command

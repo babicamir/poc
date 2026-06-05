@@ -1,0 +1,102 @@
+name: 3. CD - Deploy to UAT
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_version:
+        description: 'Beta version to promote (e.g. v1.3.0-beta.5)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE_NAME: ${{ github.repository }}
+  REGISTRY: ghcr.io
+
+jobs:
+  # ─────────────────────────────────────────────
+  # 1. Promote beta → rc
+  # ─────────────────────────────────────────────
+  promote-version:
+    name: Promote Beta → RC
+    runs-on: ubuntu-latest
+    outputs:
+      new-version: ${{ steps.promote-uat.outputs.new-version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Promote to RC (UAT)
+        id: promote-uat
+        uses: anvaplus/github-actions-common/.github/actions/promote-version@main
+        with:
+          version: ${{ inputs.artifact_version }}
+          promote-type: 'rc'
+          tag-repo: 'true'
+
+      - name: Report Promoted Version
+        run: |
+          echo "🔁 Promoted: ${{ inputs.artifact_version }} → ${{ steps.promote-uat.outputs.new-version }}"
+
+  # ─────────────────────────────────────────────
+  # 2. Re-tag image (same digest, new tag)
+  # ─────────────────────────────────────────────
+  retag-image:
+    name: Retag Image for UAT
+    runs-on: ubuntu-latest
+    needs: promote-version
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: Retag Image (no rebuild)
+        run: |
+          SOURCE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.artifact_version }}"
+          TARGET="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.promote-version.outputs.new-version }}"
+          crane copy "$SOURCE" "$TARGET"
+          echo "✅ Retagged: $SOURCE → $TARGET"
+
+  # ─────────────────────────────────────────────
+  # 3. Deploy to UAT
+  # ─────────────────────────────────────────────
+  deploy-uat:
+    name: Deploy to UAT
+    runs-on: ubuntu-latest
+    needs: [ promote-version, retag-image ]
+    environment:
+      name: uat
+      url: https://uat.example.com
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy to UAT
+        run: |
+          echo "Deploying ${{ needs.promote-version.outputs.new-version }} to UAT..."
+          # e.g. update Argo CD image tag / Helm values / kustomize overlay
+
+      - name: Run UAT Acceptance Tests
+        run: |
+          echo "Running acceptance tests against UAT..."
+          # Full regression suite / e2e test command here
+
+      - name: Summary
+        run: |
+          echo "## 🔵 UAT Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Source | \`${{ inputs.artifact_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Promoted To | \`${{ needs.promote-version.outputs.new-version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | UAT |" >> $GITHUB_STEP_SUMMARY
