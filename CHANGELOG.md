@@ -1,3 +1,10 @@
+## [1.3.2](https://github.com/babicamir/poc/compare/v1.3.1...v1.3.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* **WORKFLOW:** Update ecr retag logic ([5399bac](https://github.com/babicamir/poc/commit/5399bac0d7f78fed40fa331f07bcc1c3360e535b))
+
 ## [1.3.1](https://github.com/babicamir/poc/compare/v1.3.0...v1.3.1) (2026-06-05)
 
 
