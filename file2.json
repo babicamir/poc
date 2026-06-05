@@ -3,7 +3,7 @@
 	"name": "example",
 	"version": 1,
 	"items": ["a", "b", "c"],
-	"active": true
+	"active": false
 },
 {
 	"name": "example",
