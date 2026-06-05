@@ -1,10 +1,9 @@
 # poc
 
 ### CI/CD
-![CI](https://github.com/babicamir/poc/actions/workflows/ci.yml/badge.svg?branch=main)
-![Promote](https://github.com/babicamir/poc/actions/workflows/promote.yml/badge.svg)
-![Promote — Git tag](https://github.com/babicamir/poc/actions/workflows/promote-tag.yml/badge.svg)
-![Promote — Auto](https://github.com/babicamir/poc/actions/workflows/promote-auto.yml/badge.svg)
+![Dev Pipeline](https://github.com/babicamir/poc/actions/workflows/dev-pipeline.yml/badge.svg?branch=main)
+![Release Pipeline](https://github.com/babicamir/poc/actions/workflows/release-pipeline.yml/badge.svg)
+![Rollback](https://github.com/babicamir/poc/actions/workflows/rollback.yml/badge.svg)
 
 ### Release
 ![Latest Release](https://img.shields.io/github/v/release/babicamir/poc?label=release&color=blue)
