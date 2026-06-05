@@ -73,8 +73,19 @@ jobs:
           MANIFEST=$(aws ecr batch-get-image \
             --repository-name $REPOSITORY \
             --image-ids imageTag=$SOURCE_TAG \
+            --accepted-media-types \
+              "application/vnd.docker.distribution.manifest.v2+json" \
+              "application/vnd.docker.distribution.manifest.list.v2+json" \
+              "application/vnd.oci.image.manifest.v1+json" \
+              "application/vnd.oci.image.index.v1+json" \
             --query 'images[0].imageManifest' \
             --output text)
+
+          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
+            echo "ERROR: image tag '$SOURCE_TAG' not found in ECR repository '$REPOSITORY'"
+            echo "Ensure dev-pipeline ran successfully for this commit SHA before releasing"
+            exit 1
+          fi
 
           aws ecr put-image \
             --repository-name $REPOSITORY \
