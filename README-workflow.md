@@ -73,7 +73,7 @@ deploy to QA
 **Trigger:** manual (`workflow_dispatch`) — run every 2 weeks when ready
 
 **Inputs:**
-- `image-sha` *(optional)* — short SHA of the image QA approved (e.g. `abc1234`). Defaults to current `main` HEAD if not provided.
+- `image-sha` *(optional)* — short SHA of the image QA approved (e.g. `abc1234`). If omitted, auto-selects the most recently pushed `main-*` image from ECR.
 
 ```
 manual trigger (workflow_dispatch)
@@ -213,5 +213,5 @@ The `[skip ci]` in the commit message prevents the version bump commit from re-t
 2. **Build once** — the image deployed to PRD is the same one that ran in DEV and QA
 3. **Semantic Release owns the version** — never bump versions manually
 4. **Release on a schedule** — run `release-pipeline` manually every 2 weeks, not on every merge
-5. **Provide `image-sha` when releasing** — pins exactly the image QA signed off on
+5. **Optionally provide `image-sha` when releasing** — omitting it auto-selects the latest ECR image; provide it explicitly to pin the exact image QA signed off on
 6. **Environment gates live in GitHub Environments** — not in branch protection rules

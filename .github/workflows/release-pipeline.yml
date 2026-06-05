@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       image-sha:
-        description: 'Short SHA of the image to release (7 chars, e.g. a1b2c3d). Leave empty to use current main HEAD.'
+        description: 'Short SHA of the image to release (7 chars, e.g. a1b2c3d). Leave empty to auto-select the latest main-* image from ECR.'
         required: false
         default: ''
 
@@ -57,12 +57,27 @@ jobs:
 
       - name: Resolve source image tag
         id: source
+        env:
+          REPOSITORY: ${{ vars.ECR_REPOSITORY }}
         run: |
           if [ -n "${{ inputs.image-sha }}" ]; then
-            echo "tag=main-${{ inputs.image-sha }}" >> $GITHUB_OUTPUT
+            SOURCE_TAG="main-${{ inputs.image-sha }}"
+            echo "Using provided SHA: $SOURCE_TAG"
           else
-            echo "tag=main-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+            SOURCE_TAG=$(aws ecr describe-images \
+              --repository-name $REPOSITORY \
+              --filter tagStatus=TAGGED \
+              --query 'sort_by(imageDetails, &imagePushedAt)[*].imageTags' \
+              --output json | jq -r 'reverse | .[] | .[] | select(startswith("main-"))' | head -1)
+
+            if [ -z "$SOURCE_TAG" ]; then
+              echo "ERROR: No main-* image found in ECR. Run dev-pipeline first."
+              exit 1
+            fi
+
+            echo "Auto-selected latest image: $SOURCE_TAG"
           fi
+          echo "tag=$SOURCE_TAG" >> $GITHUB_OUTPUT
 
       - name: Re-tag image in ECR
         env:
